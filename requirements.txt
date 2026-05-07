@@ -1,0 +1,9 @@
+tensorflow
+keras
+numpy
+matplotlib
+seaborn
+scikit-learn
+gradio
+jupyter
+nbformat

@@ -1,0 +1,621 @@
+# -*- coding: utf-8 -*-
+"""
+Build script: generates the full mnist_cnn.ipynb notebook.
+Run once, then open the notebook in Jupyter.
+"""
+from nbformat import v4 as nbv4
+
+ARCH_BASELINE = (
+    "Input(28,28,1)\n"
+    "Conv2D(32, 3x3, ReLU) -> MaxPooling2D(2x2)\n"
+    "Conv2D(64, 3x3, ReLU) -> MaxPooling2D(2x2)\n"
+    "Flatten -> Dense(128, ReLU) -> Dropout(0.3)\n"
+    "Dense(10, softmax)"
+)
+
+ARCH_TUNED = (
+    "Input(28,28,1)\n"
+    "RandomRotation / RandomZoom / RandomTranslation (augmentation)\n"
+    "Conv2D(32, 3x3, ReLU) -> BatchNorm -> Conv2D(32, 3x3, ReLU) -> BatchNorm -> MaxPooling2D -> Dropout(0.25)\n"
+    "Conv2D(64, 3x3, ReLU) -> BatchNorm -> Conv2D(64, 3x3, ReLU) -> BatchNorm -> MaxPooling2D -> Dropout(0.25)\n"
+    "Flatten -> Dense(256, ReLU) -> Dropout(0.4)\n"
+    "Dense(10, softmax)"
+)
+
+CELLS = []
+
+def md(source):
+    return nbv4.new_markdown_cell(source)
+
+def code(source):
+    cell = nbv4.new_code_cell(source)
+    cell.outputs = []
+    cell.execution_count = None
+    return cell
+
+
+# =============================================================================
+# SECTION 1: Problem Statement
+# =============================================================================
+CELLS.append(md("# 1. Problem Statement"))
+CELLS.append(md(
+    "## Project Goal\n\n"
+    "Handwritten digit recognition is a foundational computer vision task. "
+    "The goal is to build a model that can accurately classify 28x28 grayscale "
+    "images of handwritten digits (0-9) from the MNIST dataset.\n\n"
+    "This notebook covers the full pipeline:\n\n"
+    "1. **Baseline CNN** -- a simple convolutional neural network with two Conv+Pool blocks\n"
+    "2. **Tuned CNN** -- a deeper network with data augmentation, BatchNorm, and stronger dropout\n"
+    "3. **Live training visualisation** -- TensorBoard-style curves that update epoch-by-epoch inside the notebook\n"
+    "4. **Gradio demo** -- draw a digit in the browser and get live predictions\n"
+    "5. **Report outline** -- auto-generated markdown summary for the team report"
+))
+
+# =============================================================================
+# SECTION 2: Dataset Overview
+# =============================================================================
+CELLS.append(md("# 2. Dataset Overview"))
+CELLS.append(code(
+    "# Imports\n"
+    "import os\n"
+    "import numpy as np\n"
+    "import matplotlib.pyplot as plt\n"
+    "from collections import Counter\n\n"
+    "# Load MNIST\n"
+    "from tensorflow.keras.datasets import mnist\n\n"
+    "(X_train_full, y_train_full), (X_test, y_test) = mnist.load_data()\n\n"
+    "print(f\"Training set : {X_train_full.shape[0]:,} samples, shape {X_train_full.shape[1:]}px\")\n"
+    "print(f\"Test set     : {X_test.shape[0]:,} samples, shape {X_test.shape[1:]}px\")\n"
+    "print(f\"Pixel range  : [{X_train_full.min()}, {X_train_full.max()}]\")"
+))
+CELLS.append(code(
+    "# Class Distribution\n"
+    "fig, ax = plt.subplots(figsize=(7, 3))\n"
+    "counts = Counter(y_train_full)\n"
+    "classes = list(range(10))\n"
+    "values  = [counts[c] for c in classes]\n"
+    "bars = ax.bar(classes, values, color=\"#4C6EF5\", edgecolor=\"white\", linewidth=0.5)\n"
+    "ax.set_xlabel(\"Digit\")\n"
+    "ax.set_ylabel(\"Samples\")\n"
+    "ax.set_title(\"Training Set -- Class Distribution\")\n"
+    "ax.set_xticks(classes)\n"
+    "for bar, v in zip(bars, values):\n"
+    "    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 100,\n"
+    "            f\"{v:,}\", ha=\"center\", va=\"bottom\", fontsize=8)\n"
+    "plt.tight_layout()\n"
+    "plt.savefig(\"report/class_distribution.png\", dpi=150)\n"
+    "plt.show()"
+))
+CELLS.append(code(
+    "# Sample Images\n"
+    "np.random.seed(42)\n"
+    "fig, axes = plt.subplots(2, 5, figsize=(10, 4))\n"
+    "for digit, ax in zip(range(10), axes.flat):\n"
+    "    idx = np.where(y_train_full == digit)[0][0]\n"
+    "    ax.imshow(X_train_full[idx], cmap=\"gray_r\")\n"
+    "    ax.set_title(f\"Label: {digit}\")\n"
+    "    ax.axis(\"off\")\n"
+    "plt.suptitle(\"Sample Images -- One per Digit Class\")\n"
+    "plt.tight_layout()\n"
+    "plt.savefig(\"report/sample_images.png\", dpi=150)\n"
+    "plt.show()"
+))
+
+# =============================================================================
+# SECTION 3: Preprocessing
+# =============================================================================
+CELLS.append(md("# 3. Preprocessing"))
+CELLS.append(code(
+    "# Split: 50k train / 10k validation\n"
+    "from tensorflow.keras.utils import to_categorical\n\n"
+    "X_train, X_val = X_train_full[:50_000], X_train_full[50_000:]\n"
+    "y_train, y_val = y_train_full[:50_000], y_train_full[50_000:]\n\n"
+    "# Reshape to (samples, 28, 28, 1) and normalise to [0, 1]\n"
+    "X_train = X_train.astype(\"float32\").reshape(-1, 28, 28, 1) / 255.0\n"
+    "X_val   = X_val.astype(\"float32\").reshape(-1, 28, 28, 1) / 255.0\n"
+    "X_test  = X_test.astype(\"float32\").reshape(-1, 28, 28, 1) / 255.0\n\n"
+    "# One-hot encode labels\n"
+    "y_train_cat = to_categorical(y_train, 10)\n"
+    "y_val_cat   = to_categorical(y_val, 10)\n"
+    "y_test_cat  = to_categorical(y_test, 10)\n\n"
+    "print(f\"Train : {X_train.shape}  |  {y_train_cat.shape}\")\n"
+    "print(f\"Val   : {X_val.shape}    |  {y_val_cat.shape}\")\n"
+    "print(f\"Test  : {X_test.shape}   |  {y_test_cat.shape}\")"
+))
+
+# =============================================================================
+# SECTION 4: Baseline CNN Model
+# =============================================================================
+CELLS.append(md("# 4. Baseline CNN Model"))
+CELLS.append(md(f"**Architecture:**\n```\n{ARCH_BASELINE}\n```"))
+CELLS.append(code(
+    "from tensorflow.keras import Sequential\n"
+    "from tensorflow.keras import layers as L\n\n"
+    "def make_baseline(input_shape=(28, 28, 1), num_classes=10):\n"
+    "    model = Sequential([\n"
+    "        L.Input(shape=input_shape),\n"
+    "        L.Conv2D(32, (3, 3), activation=\"relu\"),\n"
+    "        L.MaxPooling2D((2, 2)),\n"
+    "        L.Conv2D(64, (3, 3), activation=\"relu\"),\n"
+    "        L.MaxPooling2D((2, 2)),\n"
+    "        L.Flatten(),\n"
+    "        L.Dense(128, activation=\"relu\"),\n"
+    "        L.Dropout(0.3),\n"
+    "        L.Dense(num_classes, activation=\"softmax\"),\n"
+    "    ])\n"
+    "    model.compile(\n"
+    "        optimizer=\"adam\",\n"
+    "        loss=\"categorical_crossentropy\",\n"
+    "        metrics=[\"accuracy\"],\n"
+    "    )\n"
+    "    return model\n\n"
+    "baseline_model = make_baseline()\n"
+    "baseline_model.summary()"
+))
+
+# =============================================================================
+# SECTION 5: Tuned CNN Model + Data Augmentation
+# =============================================================================
+CELLS.append(md("# 5. Tuned CNN Model + Data Augmentation"))
+CELLS.append(md(
+    "## Data Augmentation (applied as Keras preprocessing layers)\n\n"
+    "Mild transforms -- keeps the digit recognisable while increasing noise robustness:\n\n"
+    "- **RandomRotation(0.1)** -- most common writing angle variation\n"
+    "- **RandomZoom(0.1)** -- digit can be larger or smaller in frame\n"
+    "- **RandomTranslation(0.1, 0.1)** -- digit can be offset within the 28x28 canvas"
+))
+CELLS.append(md(f"**Architecture:**\n```\n{ARCH_TUNED}\n```"))
+CELLS.append(code(
+    "def make_tuned(input_shape=(28, 28, 1), num_classes=10):\n"
+    "    model = Sequential([\n"
+    "        L.Input(shape=input_shape),\n"
+    "        # Augmentation\n"
+    "        L.RandomRotation(0.1),\n"
+    "        L.RandomZoom(0.1),\n"
+    "        L.RandomTranslation(0.1, 0.1),\n"
+    "        # Block 1\n"
+    "        L.Conv2D(32, (3, 3), activation=\"relu\", padding=\"same\"),\n"
+    "        L.BatchNormalization(),\n"
+    "        L.Conv2D(32, (3, 3), activation=\"relu\", padding=\"same\"),\n"
+    "        L.BatchNormalization(),\n"
+    "        L.MaxPooling2D((2, 2)),\n"
+    "        L.Dropout(0.25),\n"
+    "        # Block 2\n"
+    "        L.Conv2D(64, (3, 3), activation=\"relu\", padding=\"same\"),\n"
+    "        L.BatchNormalization(),\n"
+    "        L.Conv2D(64, (3, 3), activation=\"relu\", padding=\"same\"),\n"
+    "        L.BatchNormalization(),\n"
+    "        L.MaxPooling2D((2, 2)),\n"
+    "        L.Dropout(0.25),\n"
+    "        # Classifier\n"
+    "        L.Flatten(),\n"
+    "        L.Dense(256, activation=\"relu\"),\n"
+    "        L.Dropout(0.4),\n"
+    "        L.Dense(num_classes, activation=\"softmax\"),\n"
+    "    ])\n"
+    "    model.compile(\n"
+    "        optimizer=\"adam\",\n"
+    "        loss=\"categorical_crossentropy\",\n"
+    "        metrics=[\"accuracy\"],\n"
+    "    )\n"
+    "    return model\n\n"
+    "tuned_model = make_tuned()\n"
+    "tuned_model.summary()"
+))
+
+# =============================================================================
+# SECTION 6: Training Pipeline
+# =============================================================================
+CELLS.append(md("# 6. Training Pipeline"))
+CELLS.append(md(
+    "## Live Training Curves (TensorBoard-style, inline in notebook)\n\n"
+    "The `LivePlotCallback` stores metrics after each epoch and redraws a matplotlib "
+    "figure with:\n\n"
+    "- **Raw values** -- solid line at full opacity\n"
+    "- **Smoothed trend** -- translucent shaded area (alpha=0.3) under the line, using an\n"
+    "  exponential moving average (EMA) with smoothing factor 0.9 -- identical to "
+    "TensorBoard's scalar smoothing visual.\n"
+    "- **Train = blue**, **Val = orange** -- standard ML training convention.\n\n"
+    "Two separate figures are displayed -- one for each model. "
+    "Train the Baseline first, watch its curves grow, then train the Tuned model."
+))
+CELLS.append(code(
+    "# Use non-interactive backend so figures render via IPython display()\n"
+    "import matplotlib\n"
+    "matplotlib.use(\"Agg\")"
+))
+CELLS.append(code(
+    "import IPython.display as display\n"
+    "import matplotlib.pyplot as plt\n\n\n"
+    "class LivePlotCallback:\n"
+    "    \"\"\"\n"
+    "    Keras callback that updates an inline matplotlib figure after each epoch.\n\n"
+    "    Each subplot shows two metrics (train + val):\n"
+    "      - Raw  -> solid line, full opacity\n"
+    "      - Smoothed EMA -> translucent shaded area (alpha=0.3) under the line\n"
+    "    \"\"\"\n\n"
+    "    def __init__(self, title,\n"
+    "                 train_acc_key=\"accuracy\", val_acc_key=\"val_accuracy\",\n"
+    "                 train_loss_key=\"loss\",     val_loss_key=\"val_loss\"):\n"
+    "        self.title         = title\n"
+    "        self.train_acc_key = train_acc_key\n"
+    "        self.val_acc_key   = val_acc_key\n"
+    "        self.train_loss_key = train_loss_key\n"
+    "        self.val_loss_key   = val_loss_key\n"
+    "        self.history = {k: [] for k in\n"
+    "                       [train_acc_key, val_acc_key, train_loss_key, val_loss_key]}\n"
+    "        self._ema    = {k: None for k in self.history}\n"
+    "        self._ema_smoothing = 0.9\n"
+    "        self._fig   = None\n"
+    "        self._axes  = None\n\n"
+    "    def on_epoch_end(self, epoch, logs=None):\n"
+    "        logs = logs or {}\n"
+    "        for key in self.history:\n"
+    "            raw = logs.get(key, 0.0)\n"
+    "            self.history[key].append(raw)\n"
+    "            if self._ema[key] is None:\n"
+    "                self._ema[key] = raw\n"
+    "            else:\n"
+    "                self._ema[key] = (self._ema_smoothing * self._ema[key]\n"
+    "                                 + (1 - self._ema_smoothing) * raw)\n\n"
+    "        if self._fig is None:\n"
+    "            self._build_fig()\n\n"
+    "        for ax, t_key, v_key, metric_name in [\n"
+    "            (self._axes[0], self.train_acc_key,  self.val_acc_key,  \"Accuracy\"),\n"
+    "            (self._axes[1], self.train_loss_key, self.val_loss_key, \"Loss\"),\n"
+    "        ]:\n"
+    "            ax.clear()\n"
+    "            for key, color, label in [\n"
+    "                (t_key, \"#4C6EF5\", \"Train\"),\n"
+    "                (v_key, \"#FD7E14\", \"Val\"),\n"
+    "            ]:\n"
+    "                epochs   = range(1, len(self.history[key]) + 1)\n"
+    "                raw_vals = self.history[key]\n"
+    "                ema_vals = self._ema[key]\n"
+    "                ax.plot(epochs, raw_vals, color=color, linewidth=1.5, alpha=0.9)\n"
+    "                ax.fill_between(epochs, raw_vals, ema_vals,\n"
+    "                               color=color, alpha=0.25)\n"
+    "            ax.set_title(f\"{metric_name} -- {self.title}\")\n"
+    "            ax.set_xlabel(\"Epoch\")\n"
+    "            ax.set_ylabel(metric_name)\n"
+    "            ax.grid(True, alpha=0.3)\n\n"
+    "        self._fig.canvas.draw_idle()\n"
+    "        self._fig.canvas.flush_events()\n"
+    "        display.clear_output(wait=True)\n"
+    "        display.display(self._fig)\n\n"
+    "    def _build_fig(self):\n"
+    "        self._fig, self._axes = plt.subplots(1, 2, figsize=(12, 4))\n"
+    "        self._fig.suptitle(self.title, fontsize=13, fontweight=\"bold\")\n"
+    "        plt.tight_layout()\n"
+    "        self._fig.patch.set_facecolor(\"#111827\")\n\n"
+    "    def save_fig(self, path):\n"
+    "        if self._fig:\n"
+    "            self._fig.savefig(path, dpi=150, bbox_inches=\"tight\",\n"
+    "                              facecolor=self._fig.get_facecolor())"
+))
+CELLS.append(code(
+    "from tensorflow.keras.callbacks import (\n"
+    "    ReduceLROnPlateau, EarlyStopping, ModelCheckpoint\n"
+    ")\n"
+    "from tensorflow.keras.backend import clear_session\n\n"
+    "# Shared training config\n"
+    "EPOCHS   = 20\n"
+    "BATCH    = 64\n"
+    "PATIENCE = 5\n\n"
+    "os.makedirs(\"models\", exist_ok=True)\n"
+    "os.makedirs(\"report\",  exist_ok=True)\n\n"
+    "callbacks_cfg = dict(\n"
+    "    reduce_lr   = ReduceLROnPlateau(monitor=\"val_accuracy\", factor=0.5,\n"
+    "                                  patience=3, min_lr=1e-6, verbose=1),\n"
+    "    early_stop  = EarlyStopping(monitor=\"val_loss\", patience=PATIENCE,\n"
+    "                               restore_best_weights=True, verbose=1),\n"
+    "    checkpoint  = lambda name: ModelCheckpoint(\n"
+    "        f\"models/best_{name}.keras\", monitor=\"val_loss\",\n"
+    "        save_best_only=True, verbose=1),\n"
+    ")"
+))
+CELLS.append(md("### Train Baseline"))
+CELLS.append(code(
+    "clear_session()\n"
+    "baseline_model = make_baseline()\n\n"
+    "cb_baseline = [\n"
+    "    callbacks_cfg[\"reduce_lr\"],\n"
+    "    callbacks_cfg[\"early_stop\"],\n"
+    "    callbacks_cfg[\"checkpoint\"](\"baseline.keras\"),\n"
+    "    LivePlotCallback(\"Baseline Training\"),\n"
+    "]\n\n"
+    "hist_baseline = baseline_model.fit(\n"
+    "    X_train, y_train_cat,\n"
+    "    validation_data=(X_val, y_val_cat),\n"
+    "    epochs=EPOCHS, batch_size=BATCH,\n"
+    "    callbacks=cb_baseline,\n"
+    "    verbose=0,\n"
+    ")\n\n"
+    "print(\"\\nBaseline training complete.\")\n"
+    "cb_baseline[-1].save_fig(\"report/baseline_training_curves.png\")"
+))
+CELLS.append(md("### Train Tuned"))
+CELLS.append(code(
+    "clear_session()\n"
+    "tuned_model = make_tuned()\n\n"
+    "cb_tuned = [\n"
+    "    callbacks_cfg[\"reduce_lr\"],\n"
+    "    callbacks_cfg[\"early_stop\"],\n"
+    "    callbacks_cfg[\"checkpoint\"](\"tuned.keras\"),\n"
+    "    LivePlotCallback(\"Tuned Training\"),\n"
+    "]\n\n"
+    "hist_tuned = tuned_model.fit(\n"
+    "    X_train, y_train_cat,\n"
+    "    validation_data=(X_val, y_val_cat),\n"
+    "    epochs=EPOCHS, batch_size=BATCH,\n"
+    "    callbacks=cb_tuned,\n"
+    "    verbose=0,\n"
+    ")\n\n"
+    "print(\"\\nTuned model training complete.\")\n"
+    "cb_tuned[-1].save_fig(\"report/tuned_training_curves.png\")"
+))
+
+# =============================================================================
+# SECTION 7: Validation Comparison
+# =============================================================================
+CELLS.append(md("# 7. Validation Comparison"))
+CELLS.append(code(
+    "# Polished static comparison plot -- 2x2 grid, Baseline vs Tuned overlaid\n"
+    "def ema_series(values, smoothing=0.9):\n"
+    "    result = []\n"
+    "    for v in values:\n"
+    "        if not result:\n"
+    "            result.append(v)\n"
+    "        else:\n"
+    "            result.append(smoothing * result[-1] + (1 - smoothing) * v)\n"
+    "    return result\n\n"
+    "fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)\n\n"
+    "histories = {\"Baseline\": hist_baseline, \"Tuned\": hist_tuned}\n"
+    "colors    = {\"Baseline\": \"#4C6EF5\", \"Tuned\": \"#FD7E14\"}\n\n"
+    "for col, (metric, ylabel) in enumerate([(\"accuracy\", \"Accuracy\"), (\"loss\", \"Loss\")]):\n"
+    "    for row, (split, key) in enumerate([(\"Train\", metric), (\"Val\", f\"val_{metric}\")]):\n"
+    "        ax = axes[row, col]\n"
+    "        for name, hist in histories.items():\n"
+    "            raw   = hist.history[key]\n"
+    "            ema   = ema_series(raw)\n"
+    "            epochs = range(1, len(raw) + 1)\n"
+    "            color = colors[name]\n"
+    "            ax.plot(epochs, raw, color=color, linewidth=1.5, alpha=0.85,\n"
+    "                    label=f\"{name} (raw)\")\n"
+    "            ax.fill_between(epochs, raw, ema, color=color, alpha=0.22,\n"
+    "                            label=f\"{name} (smooth)\")\n"
+    "        ax.set_ylabel(ylabel)\n"
+    "        ax.set_xlabel(\"Epoch\")\n"
+    "        ax.set_title(f\"{split} {ylabel}\")\n"
+    "        ax.legend(fontsize=8)\n"
+    "        ax.grid(True, alpha=0.3)\n\n"
+    "plt.suptitle(\"Training Comparison: Baseline vs Tuned\", fontsize=14, fontweight=\"bold\")\n"
+    "plt.tight_layout()\n"
+    "plt.savefig(\"report/model_comparison.png\", dpi=150)\n"
+    "plt.show()"
+))
+CELLS.append(code(
+    "# Best-epoch summary table\n"
+    "import pandas as pd\n\n"
+    "best_baseline_epoch = int(np.argmax(hist_baseline.history[\"val_accuracy\"])) + 1\n"
+    "best_tuned_epoch    = int(np.argmax(hist_tuned.history[\"val_accuracy\"]))    + 1\n"
+    "best_baseline_acc   = float(np.max(hist_baseline.history[\"val_accuracy\"]))\n"
+    "best_tuned_acc      = float(np.max(hist_tuned.history[\"val_accuracy\"]))\n\n"
+    "summary = pd.DataFrame({\n"
+    "    \"Model\":          [\"Baseline CNN\", \"Tuned CNN\"],\n"
+    "    \"Best Val Acc\":   [f\"{best_baseline_acc:.4f}\", f\"{best_tuned_acc:.4f}\"],\n"
+    "    \"Final Val Acc\":  [f\"{hist_baseline.history['val_accuracy'][-1]:.4f}\",\n"
+    "                       f\"{hist_tuned.history['val_accuracy'][-1]:.4f}\"],\n"
+    "    \"Epochs Trained\": [len(hist_baseline.history[\"val_accuracy\"]),\n"
+    "                       len(hist_tuned.history[\"val_accuracy\"])],\n"
+    "    \"Best Epoch\":     [best_baseline_epoch, best_tuned_epoch],\n"
+    "})\n\n"
+    "print(summary.to_string(index=False))\n"
+    "summary.to_csv(\"report/model_summary.csv\", index=False)"
+))
+
+# =============================================================================
+# SECTION 8: Test Evaluation
+# =============================================================================
+CELLS.append(md("# 8. Test Evaluation"))
+CELLS.append(code(
+    "from sklearn.metrics import confusion_matrix, classification_report\n\n"
+    "# Load best weights\n"
+    "baseline_model.load_weights(\"models/best_baseline.keras\")\n"
+    "tuned_model.load_weights(\"models/best_tuned.keras\")\n\n"
+    "# Test predictions\n"
+    "baseline_pred = np.argmax(baseline_model.predict(X_test, verbose=0), axis=1)\n"
+    "tuned_pred    = np.argmax(tuned_model.predict(X_test, verbose=0), axis=1)\n\n"
+    "baseline_test_acc = float(np.mean(baseline_pred == y_test))\n"
+    "tuned_test_acc    = float(np.mean(tuned_pred == y_test))\n\n"
+    "print(f\"Baseline -- Test Accuracy: {baseline_test_acc:.4f}\")\n"
+    "print(f\"Tuned    -- Test Accuracy: {tuned_test_acc:.4f}\")\n"
+    "print()\n"
+    "print(\"Classification Report (Tuned):\")\n"
+    "print(classification_report(y_test, tuned_pred, digits=4))"
+))
+CELLS.append(code(
+    "# Confusion Matrix -- row-normalised heatmap with confused-pair annotations\n"
+    "import seaborn as sns\n\n"
+    "cm     = confusion_matrix(y_test, tuned_pred)\n"
+    "cm_norm = cm.astype(\"float\") / cm.sum(axis=1, keepdims=True)\n\n"
+    "fig, ax = plt.subplots(figsize=(10, 8))\n"
+    "sns.heatmap(cm_norm, annot=False, fmt=\".0%\", cmap=\"Blues\",\n"
+    "            xticklabels=range(10), yticklabels=range(10), ax=ax,\n"
+    "            cbar_kws={\"label\": \"Recall (%)\"})\n\n"
+    "# Top 5 confused pairs (highest off-diagonal values)\n"
+    "off_diagonal = [(cm_norm[i, j], i, j)\n"
+    "                 for i in range(10) for j in range(10) if i != j]\n"
+    "top_confused = sorted(off_diagonal, reverse=True)[:5]\n"
+    "confused_label = \", \".join(f\"{i}<->{j}\" for _, i, j in top_confused)\n\n"
+    "# Red boxes around confused cells\n"
+    "for _, i, j in top_confused:\n"
+    "    ax.add_patch(plt.Rectangle((j, i), 1, 1, fill=False,\n"
+    "                               edgecolor=\"red\", linewidth=2.5))\n\n"
+    "ax.annotate(f\"Most confused: {confused_label}\",\n"
+    "            xy=(0.5, -0.12), xycoords=\"axes fraction\",\n"
+    "            ha=\"center\", fontsize=9, color=\"#555\", style=\"italic\")\n\n"
+    "ax.set_xlabel(\"Predicted Digit\")\n"
+    "ax.set_ylabel(\"True Digit\")\n"
+    "ax.set_title(\"Confusion Matrix (row-normalised -- recall per true class)\")\n"
+    "plt.tight_layout()\n"
+    "plt.savefig(\"report/confusion_matrix.png\", dpi=150)\n"
+    "plt.show()\n"
+    "print(\"Top confused digit pairs:\", confused_label)"
+))
+
+# =============================================================================
+# SECTION 9: Sample Predictions
+# =============================================================================
+CELLS.append(md("# 9. Sample Predictions"))
+CELLS.append(code(
+    "# 20 test images with predicted / true labels\n"
+    "np.random.seed(7)\n"
+    "sample_idx = np.random.choice(len(X_test), size=20, replace=False)\n\n"
+    "fig, axes = plt.subplots(4, 5, figsize=(12, 10))\n"
+    "for idx, ax in zip(sample_idx, axes.flat):\n"
+    "    img   = X_test[idx].squeeze()\n"
+    "    pred  = int(tuned_pred[idx])\n"
+    "    true  = int(y_test[idx])\n"
+    "    color = \"#2e9a2e\" if pred == true else \"#e03030\"\n"
+    "    ax.imshow(img, cmap=\"gray_r\")\n"
+    "    ax.set_title(f\"True: {true}  Pred: {pred}\", color=color, fontsize=11)\n"
+    "    ax.axis(\"off\")\n\n"
+    "plt.suptitle(\"Sample Predictions -- Green=Correct, Red=Incorrect\", fontsize=13)\n"
+    "plt.tight_layout()\n"
+    "plt.savefig(\"report/sample_predictions.png\", dpi=150)\n"
+    "plt.show()"
+))
+
+# =============================================================================
+# SECTION 10: Gradio Demo
+# =============================================================================
+CELLS.append(md("# 10. Gradio Demo"))
+CELLS.append(md(
+    "**How to use:**\n"
+    "1. Run the cell below -- Gradio will launch inline with a public share link.\n"
+    "2. Draw a digit (0-9) in the canvas on the left.\n"
+    "3. Click **Submit** -- the top-3 predictions appear on the right with probability bars.\n"
+    "4. Click **Clear** to reset.\n\n"
+    "> **Note:** Drawing is not real-time/continuous -- click **Submit** after each stroke. "
+    "This is a Gradio behaviour, not a notebook limitation."
+))
+CELLS.append(code(
+    "import gradio as gr\n"
+    "import numpy as np\n\n\n"
+    "def predict_digit(img):\n"
+    "    \"\"\"\n"
+    "    Receives a (H, W, 3) uint8 numpy array from Gradio Sketchpad.\n"
+    "    Converts to (1, 28, 28, 1) float32 in [0, 1] range, runs inference.\n"
+    "    Returns top-3 predictions as a dict {digit: probability}.\n"
+    "    \"\"\"\n"
+    "    # Gradio gives RGB(A); take first channel, invert (white stroke on black -> black digit)\n"
+    "    gray = img[:, :, 0].astype(\"float32\") / 255.0\n"
+    "    gray = 1.0 - gray\n"
+    "    batch = gray.reshape(1, 28, 28, 1)\n"
+    "    probs = tuned_model.predict(batch, verbose=0)[0]\n"
+    "    top3_idx = np.argsort(probs)[::-1][:3]\n"
+    "    return {str(d): float(p) for d, p in zip(top3_idx, probs[top3_idx])}\n\n\n"
+    "demo = gr.Blocks(title=\"MNIST Digit Recognition -- Tuned CNN\")\n\n"
+    "with demo:\n"
+    "    gr.Markdown(\"## Draw a digit (0-9) and submit\")\n"
+    "    with gr.Row():\n"
+    "        canvas = gr.Sketchpad(\n"
+    "            label=\"Draw here\",\n"
+    "            brush=gr.Brush(default_size=12, colors=[\"#ffffff\"]),\n"
+    "            height=300, width=300,\n"
+    "        )\n"
+    "        with gr.Column():\n"
+    "            submit_btn = gr.Button(\"Submit\", variant=\"primary\")\n"
+    "            clear_btn  = gr.Button(\"Clear\")\n"
+    "            output     = gr.Label(label=\"Top-3 Predictions\",\n"
+    "                                  num_top_classes=3)\n\n"
+    "    gr.Examples(\n"
+    "        [[X_test[i].squeeze()] for i in range(10)],\n"
+    "        inputs=canvas,\n"
+    "    )\n\n"
+    "    submit_btn.click(fn=predict_digit, inputs=canvas, outputs=output)\n"
+    "    clear_btn.click(fn=lambda: None, inputs=None, outputs=canvas)\n\n"
+    "demo.launch(inline=True, share=True, server_port=7860)\n"
+    "print(\"Demo launched.\")"
+))
+
+# =============================================================================
+# SECTION 11: Report Outline + GitHub Push
+# =============================================================================
+CELLS.append(md("# 11. Report Outline + GitHub Push"))
+CELLS.append(code(
+    "# Auto-generate report/outline.md with embedded plot images\n"
+    "# Variables baseline_test_acc and tuned_test_acc are from Section 8.\n\n"
+    "report_md = f\"\"\"\n"
+    "# MNIST Handwritten Digit Recognition -- Report Outline\n\n"
+    "> Auto-generated from notebook. Replace TODO markers with your team's text.\n\n"
+    "---\n\n"
+    "## 1. Introduction\n"
+    "- TODO: Context about MNIST and why digit recognition matters\n"
+    "- TODO: Project goal and scope\n\n"
+    "## 2. Dataset\n"
+    "- MNIST: 60,000 training / 10,000 test images, 28x28 grayscale\n"
+    "- Class distribution is roughly uniform (~6,000 samples per digit class)\n"
+    "- Preprocessing: pixel normalisation to [0,1], one-hot labels\n\n"
+    "![Class distribution](report/class_distribution.png)\n"
+    "![Sample images](report/sample_images.png)\n\n"
+    "## 3. Model Architectures\n\n"
+    "### Baseline CNN\n"
+    "```\n"
+    + ARCH_BASELINE + "\n"
+    "```\n\n"
+    "### Tuned CNN\n"
+    "```\n"
+    + ARCH_TUNED + "\n"
+    "```\n\n"
+    "## 4. Training\n"
+    "- Optimiser: Adam with ReduceLROnPlateau (factor=0.5, patience=3)\n"
+    "- Early stopping: patience=5, restore_best_weights=True\n"
+    "- Batch size: 64, max epochs: 20\n\n"
+    "## 5. Results\n\n"
+    "### Training Curves\n"
+    "![Baseline training](report/baseline_training_curves.png)\n"
+    "![Tuned training](report/tuned_training_curves.png)\n\n"
+    "### Model Comparison\n"
+    "![Comparison](report/model_comparison.png)\n\n"
+    "### Test Evaluation\n"
+    "- Baseline Test Accuracy: {baseline_test_acc:.4f}\n"
+    "- Tuned Test Accuracy:    {tuned_test_acc:.4f}\n\n"
+    "![Confusion Matrix](report/confusion_matrix.png)\n\n"
+    "### Sample Predictions\n"
+    "![Predictions](report/sample_predictions.png)\n\n"
+    "## 6. Demo\n"
+    "The Gradio demo (Section 10) lets users draw a digit in the browser and receive\n"
+    "top-3 predictions from the tuned model in real-time.\n\n"
+    "---\n\n"
+    "*Report generated automatically. Review all TODO markers before submission.*\n"
+    "\"\"\"\n\n"
+    "with open(\"report/outline.md\", \"w\", encoding=\"utf-8\") as f:\n"
+    "    f.write(report_md)\n\n"
+    "print(\"report/outline.md written.\")"
+))
+
+# =============================================================================
+# Build and write notebook
+# =============================================================================
+nb = nbv4.new_notebook()
+nb.cells = CELLS
+nb.metadata = {
+    "kernelspec": {
+        "display_name": "Python 3",
+        "language": "python",
+        "name": "python3",
+    },
+    "language_info": {
+        "name": "python",
+        "version": "3.12.0",
+    },
+}
+
+path = "notebooks/mnist_cnn.ipynb"
+with open(path, "w", encoding="utf-8") as f:
+    from nbformat import write
+    write(nb, f)
+
+print(f"Notebook written to {path}")
